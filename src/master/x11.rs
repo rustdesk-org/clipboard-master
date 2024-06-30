@@ -58,7 +58,7 @@ impl<H: ClipboardHandler> Master<H> {
 
 
     ///Starts Master by waiting for any change
-    pub fn run(&mut self) -> io::Result<()> {
+    pub fn run_x11(&mut self) -> io::Result<()> {
         let clipboard = match Self::x11_clipboard() {
             Ok(clipboard) => clipboard,
             Err(error) => {
@@ -223,5 +223,70 @@ impl<H: ClipboardHandler> Master<H> {
     pub fn x11_clipboard() -> &'static Result<x11_clipboard::Clipboard, x11_clipboard::error::Error> {
         static CLIP: OnceLock<Result<x11_clipboard::Clipboard, x11_clipboard::error::Error>> = OnceLock::new();
         CLIP.get_or_init(x11_clipboard::Clipboard::new)
+    }
+
+    fn run_wayland(&mut self) -> io::Result<()> {
+        use wl_clipboard_rs::{
+            paste::{get_mime_types as wl_clipboard_get_mime_types, Error as WaylandError, Seat},
+            utils::is_primary_selection_supported,
+        };
+        // https://github.com/1Password/arboard/blob/151e679ee5c208403b06ba02d28f92c5891f7867/src/platform/linux/wayland.rs#L50
+        if let Err(error) = is_primary_selection_supported() {
+            return Err(io::Error::new(io::ErrorKind::Other, error));
+        }
+
+        let mut result = Ok(());
+        loop {
+            // https://github.com/xrelkd/clipcat/blob/d78fa67df6cc2f72995b9db864a66abbf685cb5b/crates/clipboard/src/listener/wayland/mod.rs#L85
+            match wl_clipboard_get_mime_types(
+                wl_clipboard_rs::paste::ClipboardType::Primary,
+                Seat::Unspecified,
+            ) {
+                Ok(_) => match self.handler.on_clipboard_change() {
+                    CallbackResult::Next => continue,
+                    CallbackResult::Stop => break,
+                    CallbackResult::StopWithError(error) => {
+                        result = Err(error);
+                        break;
+                    }
+                },
+                Err(
+                    WaylandError::NoSeats | WaylandError::ClipboardEmpty | WaylandError::NoMimeType,
+                ) => {
+                    // println!("The clipboard is empty, sleep for a while");
+                }
+                Err(error) => {
+                    let error = io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("Failed to load clipboard: {:?}", error),
+                    );
+
+                    match self.handler.on_clipboard_error(error) {
+                        CallbackResult::Next => continue,
+                        CallbackResult::Stop => break,
+                        CallbackResult::StopWithError(error) => {
+                            result = Err(error);
+                            break;
+                        }
+                    }
+                }
+            }
+            match self.recv.recv_timeout(self.handler.sleep_interval()) {
+                Ok(()) => break,
+                //timeout
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        result
+    }
+
+   ///Starts Master by waiting for any change
+    pub fn run(&mut self) -> io::Result<()> {
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            self.run_wayland()
+        } else {
+            self.run_x11()
+        }
     }
 }
