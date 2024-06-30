@@ -76,6 +76,8 @@ pub struct Master<H> {
     window: Window,
 }
 
+unsafe impl<H> Send for Master<H> {}
+
 impl<H: ClipboardHandler> Master<H> {
     #[inline(always)]
     ///Creates new instance.
