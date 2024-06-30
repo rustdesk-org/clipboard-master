@@ -228,13 +228,7 @@ impl<H: ClipboardHandler> Master<H> {
     fn run_wayland(&mut self) -> io::Result<()> {
         use wl_clipboard_rs::{
             paste::{get_mime_types as wl_clipboard_get_mime_types, Error as WaylandError, Seat},
-            utils::is_primary_selection_supported,
         };
-        // https://github.com/1Password/arboard/blob/151e679ee5c208403b06ba02d28f92c5891f7867/src/platform/linux/wayland.rs#L50
-        if let Err(error) = is_primary_selection_supported() {
-            return Err(io::Error::new(io::ErrorKind::Other, error));
-        }
-
         let mut result = Ok(());
         loop {
             // https://github.com/xrelkd/clipcat/blob/d78fa67df6cc2f72995b9db864a66abbf685cb5b/crates/clipboard/src/listener/wayland/mod.rs#L85
@@ -283,10 +277,15 @@ impl<H: ClipboardHandler> Master<H> {
 
    ///Starts Master by waiting for any change
     pub fn run(&mut self) -> io::Result<()> {
+        use wl_clipboard_rs::utils::is_primary_selection_supported;
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            self.run_wayland()
-        } else {
-            self.run_x11()
+            // https://github.com/1Password/arboard/blob/151e679ee5c208403b06ba02d28f92c5891f7867/src/platform/linux/wayland.rs#L50
+            if let Err(error) = is_primary_selection_supported() {
+                println!("Failed to start wayland: {:?}, fall back to x11", error); 
+            } else {
+                return self.run_wayland();
+            }
         }
+        self.run_x11()
     }
 }
