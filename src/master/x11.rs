@@ -284,7 +284,7 @@ impl<H: ClipboardHandler> Master<H> {
         let (listen_tx, listen_rx) = sync_channel(0);
         let recv = self.recv.clone();
         let t = std::thread::spawn(move || {
-            let recv_timeout_dur = std::time::Duration::from_millis(500);
+            let recv_timeout_dur = std::time::Duration::from_millis(100);
             loop {
                 match recv.lock().unwrap().recv_timeout(recv_timeout_dur) {
                     Ok(()) => break,
