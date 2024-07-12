@@ -1,7 +1,9 @@
 use crate::{CallbackResult, ClipboardHandler};
 
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, SyncSender, Receiver, sync_channel};
 
 use x11rb::protocol::xfixes;
@@ -32,7 +34,7 @@ impl Drop for Shutdown {
 pub struct Master<H> {
     handler: H,
     sender: SyncSender<()>,
-    recv: Receiver<()>
+    recv: Arc<Mutex<Receiver<()>>>
 }
 
 impl<H: ClipboardHandler> Master<H> {
@@ -44,7 +46,7 @@ impl<H: ClipboardHandler> Master<H> {
         Ok(Self {
             handler,
             sender,
-            recv,
+            recv: Arc::new(Mutex::new(recv)),
         })
     }
 
@@ -158,7 +160,7 @@ impl<H: ClipboardHandler> Master<H> {
                         }
                     },
                     Ok(_) => {
-                        match self.recv.recv_timeout(self.handler.sleep_interval()) {
+                        match self.recv.lock().unwrap().recv_timeout(self.handler.sleep_interval()) {
                             Ok(()) => break 'main,
                             //timeout
                             Err(mpsc::RecvTimeoutError::Timeout) => continue 'poll,
@@ -197,7 +199,7 @@ impl<H: ClipboardHandler> Master<H> {
                 }
             }
 
-            match self.recv.recv_timeout(self.handler.sleep_interval()) {
+            match self.recv.lock().unwrap().recv_timeout(self.handler.sleep_interval()) {
                 Ok(()) => break,
                 //timeout
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -226,52 +228,54 @@ impl<H: ClipboardHandler> Master<H> {
     }
 
     fn run_wayland(&mut self) -> io::Result<()> {
-        use wl_clipboard_rs::{
-            paste::{get_mime_types as wl_clipboard_get_mime_types, Error as WaylandError, Seat},
-        };
+        let exit_flag = Arc::new(AtomicBool::new(false));
+        let exit_flag_clone = exit_flag.clone();
+
+        let (listen_tx, listen_rx) = sync_channel(0);
+        let recv = self.recv.clone();
+        let t = std::thread::spawn(move || {
+            let recv_timeout_dur = std::time::Duration::from_millis(100);
+            loop {
+                match recv.lock().unwrap().recv_timeout(recv_timeout_dur) {
+                    Ok(()) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+                match listen_rx.recv_timeout(recv_timeout_dur) {
+                    Ok(()) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            exit_flag_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+
         let mut result = Ok(());
-        loop {
-            // https://github.com/xrelkd/clipcat/blob/d78fa67df6cc2f72995b9db864a66abbf685cb5b/crates/clipboard/src/listener/wayland/mod.rs#L85
-            match wl_clipboard_get_mime_types(
-                wl_clipboard_rs::paste::ClipboardType::Primary,
-                Seat::Unspecified,
-            ) {
-                Ok(_) => match self.handler.on_clipboard_change() {
-                    CallbackResult::Next => continue,
-                    CallbackResult::Stop => break,
-                    CallbackResult::StopWithError(error) => {
-                        result = Err(error);
+        use super::wayland::WlClipboardListener;
+        match WlClipboardListener::init(exit_flag.clone()) {
+            Ok(listener) => {
+                for _context in listener.into_iter() {
+                    if exit_flag.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
-                },
-                Err(
-                    WaylandError::NoSeats | WaylandError::ClipboardEmpty | WaylandError::NoMimeType,
-                ) => {
-                    // println!("The clipboard is empty, sleep for a while");
-                }
-                Err(error) => {
-                    let error = io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("Failed to load clipboard: {:?}", error),
-                    );
-
-                    match self.handler.on_clipboard_error(error) {
-                        CallbackResult::Next => continue,
-                        CallbackResult::Stop => break,
+                    match self.handler.on_clipboard_change() {
                         CallbackResult::StopWithError(error) => {
                             result = Err(error);
                             break;
                         }
+                        CallbackResult::Stop => {
+                            break;
+                        }
+                        CallbackResult::Next => {}
                     }
                 }
             }
-            match self.recv.recv_timeout(self.handler.sleep_interval()) {
-                Ok(()) => break,
-                //timeout
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(error) => {
+                result = Err(io::Error::new(io::ErrorKind::Other, error));
             }
         }
+        listen_tx.send(()).ok();
+        t.join().ok();
         result
     }
 
