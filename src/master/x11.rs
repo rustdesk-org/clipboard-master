@@ -1,18 +1,14 @@
 use crate::{CallbackResult, ClipboardHandler};
 
-use std::{
-    io,
-    sync::{
-        atomic::AtomicBool,
-        mpsc::{self, sync_channel, Receiver, SyncSender},
-        Arc, Mutex, OnceLock,
-    },
-};
+use std::io;
+use std::sync::{Arc, Mutex};
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::{self, SyncSender, Receiver, sync_channel};
 
-use x11rb::{
-    connection::Connection,
-    protocol::{xfixes, xproto::ConnectionExt},
-};
+use x11rb::protocol::xfixes;
+use x11rb::connection::Connection;
+use x11rb::protocol::xproto::ConnectionExt;
 
 ///Shutdown channel
 ///
@@ -38,7 +34,7 @@ impl Drop for Shutdown {
 pub struct Master<H> {
     handler: H,
     sender: SyncSender<()>,
-    recv: Arc<Mutex<Receiver<()>>>,
+    recv: Arc<Mutex<Receiver<()>>>
 }
 
 impl<H: ClipboardHandler> Master<H> {
@@ -58,9 +54,10 @@ impl<H: ClipboardHandler> Master<H> {
     ///Creates shutdown channel.
     pub fn shutdown_channel(&self) -> Shutdown {
         Shutdown {
-            sender: self.sender.clone(),
+            sender: self.sender.clone()
         }
     }
+
 
     ///Starts Master by waiting for any change
     pub fn run_x11(&mut self) -> io::Result<()> {
@@ -74,6 +71,7 @@ impl<H: ClipboardHandler> Master<H> {
             }
         };
 
+
         if let Err(error) = xfixes::query_version(&clipboard.getter.connection, 5, 0) {
             return Err(io::Error::new(io::ErrorKind::Other, error));
         }
@@ -82,25 +80,16 @@ impl<H: ClipboardHandler> Master<H> {
         'main: loop {
             let selection = clipboard.getter.atoms.clipboard;
 
-            let screen = match clipboard
-                .getter
-                .connection
-                .setup()
-                .roots
-                .get(clipboard.getter.screen)
-            {
+            let screen = match clipboard.getter.connection.setup().roots.get(clipboard.getter.screen) {
                 Some(screen) => screen,
-                None => match self.handler.on_clipboard_error(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Screen is not available",
-                )) {
+                None => match self.handler.on_clipboard_error(io::Error::new(io::ErrorKind::Other, "Screen is not available")) {
                     CallbackResult::Next => continue,
                     CallbackResult::Stop => break,
                     CallbackResult::StopWithError(error) => {
                         result = Err(error);
                         break;
                     }
-                },
+                }
             };
 
             // Clear selection sources...
@@ -108,32 +97,22 @@ impl<H: ClipboardHandler> Master<H> {
                 &clipboard.getter.connection,
                 screen.root,
                 clipboard.getter.atoms.primary,
-                xfixes::SelectionEventMask::default(),
-            )
-            .and_then(|_| {
-                xfixes::select_selection_input(
-                    &clipboard.getter.connection,
-                    screen.root,
-                    clipboard.getter.atoms.clipboard,
-                    xfixes::SelectionEventMask::default(), // ...and set the one requested now
-                )
-            })
-            .and_then(|_| {
-                xfixes::select_selection_input(
-                    &clipboard.getter.connection,
-                    screen.root,
-                    selection,
-                    xfixes::SelectionEventMask::SET_SELECTION_OWNER
-                        | xfixes::SelectionEventMask::SELECTION_CLIENT_CLOSE
-                        | xfixes::SelectionEventMask::SELECTION_WINDOW_DESTROY,
-                )
-            });
+                xfixes::SelectionEventMask::default()
+            ).and_then(|_| xfixes::select_selection_input(
+                &clipboard.getter.connection,
+                screen.root,
+                clipboard.getter.atoms.clipboard,
+                xfixes::SelectionEventMask::default()
+            // ...and set the one requested now
+            )).and_then(|_| xfixes::select_selection_input(
+                &clipboard.getter.connection,
+                screen.root,
+                selection,
+                xfixes::SelectionEventMask::SET_SELECTION_OWNER | xfixes::SelectionEventMask::SELECTION_CLIENT_CLOSE | xfixes::SelectionEventMask::SELECTION_WINDOW_DESTROY
+            ));
 
             if let Err(error) = clipboard.getter.connection.flush() {
-                match self
-                    .handler
-                    .on_clipboard_error(io::Error::new(io::ErrorKind::Other, error))
-                {
+                match self.handler.on_clipboard_error(io::Error::new(io::ErrorKind::Other, error)) {
                     CallbackResult::Next => continue,
                     CallbackResult::Stop => break,
                     CallbackResult::StopWithError(error) => {
@@ -147,10 +126,7 @@ impl<H: ClipboardHandler> Master<H> {
                 Ok(cookie) => {
                     let sequence_number = cookie.sequence_number();
                     if let Err(error) = cookie.check() {
-                        match self
-                            .handler
-                            .on_clipboard_error(io::Error::new(io::ErrorKind::Other, error))
-                        {
+                        match self.handler.on_clipboard_error(io::Error::new(io::ErrorKind::Other, error)) {
                             CallbackResult::Next => continue,
                             CallbackResult::Stop => break,
                             CallbackResult::StopWithError(error) => {
@@ -160,18 +136,15 @@ impl<H: ClipboardHandler> Master<H> {
                         }
                     }
                     sequence_number
-                }
-                Err(error) => match self
-                    .handler
-                    .on_clipboard_error(io::Error::new(io::ErrorKind::Other, error))
-                {
+                },
+                Err(error) => match self.handler.on_clipboard_error(io::Error::new(io::ErrorKind::Other, error)) {
                     CallbackResult::Next => continue,
                     CallbackResult::Stop => break,
                     CallbackResult::StopWithError(error) => {
                         result = Err(error);
                         break;
                     }
-                },
+                }
             };
 
             'poll: loop {
@@ -181,18 +154,13 @@ impl<H: ClipboardHandler> Master<H> {
                             CallbackResult::Next => break 'poll,
                             CallbackResult::Stop => break 'main,
                             CallbackResult::StopWithError(error) => {
-                                result = Err(error);
+                                result =  Err(error);
                                 break 'main;
                             }
                         }
-                    }
+                    },
                     Ok(_) => {
-                        match self
-                            .recv
-                            .lock()
-                            .unwrap()
-                            .recv_timeout(self.handler.sleep_interval())
-                        {
+                        match self.recv.lock().unwrap().recv_timeout(self.handler.sleep_interval()) {
                             Ok(()) => break 'main,
                             //timeout
                             Err(mpsc::RecvTimeoutError::Timeout) => continue 'poll,
@@ -217,16 +185,9 @@ impl<H: ClipboardHandler> Master<H> {
                 }
             }
 
-            let delete = clipboard
-                .getter
-                .connection
-                .delete_property(clipboard.getter.window, clipboard.getter.atoms.property)
-                .map_err(|error| io::Error::new(io::ErrorKind::Other, error))
-                .and_then(|cookie| {
-                    cookie
-                        .check()
-                        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))
-                });
+            let delete = clipboard.getter.connection.delete_property(clipboard.getter.window, clipboard.getter.atoms.property)
+                                                    .map_err(|error| io::Error::new(io::ErrorKind::Other, error))
+                                                    .and_then(|cookie| cookie.check().map_err(|error| io::Error::new(io::ErrorKind::Other, error)));
             if let Err(error) = delete {
                 match self.handler.on_clipboard_error(error) {
                     CallbackResult::Next => (),
@@ -238,12 +199,7 @@ impl<H: ClipboardHandler> Master<H> {
                 }
             }
 
-            match self
-                .recv
-                .lock()
-                .unwrap()
-                .recv_timeout(self.handler.sleep_interval())
-            {
+            match self.recv.lock().unwrap().recv_timeout(self.handler.sleep_interval()) {
                 Ok(()) => break,
                 //timeout
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
@@ -251,11 +207,7 @@ impl<H: ClipboardHandler> Master<H> {
             }
         }
 
-        match clipboard
-            .getter
-            .connection
-            .delete_property(clipboard.getter.window, clipboard.getter.atoms.property)
-        {
+        match clipboard.getter.connection.delete_property(clipboard.getter.window, clipboard.getter.atoms.property) {
             Ok(cookie) => match cookie.check() {
                 Ok(_) => result,
                 Err(error) => Err(io::Error::new(io::ErrorKind::Other, error)),
@@ -270,10 +222,8 @@ impl<H: ClipboardHandler> Master<H> {
     ///
     ///Prefer to use it on Linux as underlying `x11-clipboard` crate has buggy dtor
     ///and doesn't clean up all resources associated with `Clipboard`
-    pub fn x11_clipboard() -> &'static Result<x11_clipboard::Clipboard, x11_clipboard::error::Error>
-    {
-        static CLIP: OnceLock<Result<x11_clipboard::Clipboard, x11_clipboard::error::Error>> =
-            OnceLock::new();
+    pub fn x11_clipboard() -> &'static Result<x11_clipboard::Clipboard, x11_clipboard::error::Error> {
+        static CLIP: OnceLock<Result<x11_clipboard::Clipboard, x11_clipboard::error::Error>> = OnceLock::new();
         CLIP.get_or_init(x11_clipboard::Clipboard::new)
     }
 
@@ -329,13 +279,13 @@ impl<H: ClipboardHandler> Master<H> {
         result
     }
 
-    ///Starts Master by waiting for any change
+   ///Starts Master by waiting for any change
     pub fn run(&mut self) -> io::Result<()> {
         use wl_clipboard_rs::utils::is_primary_selection_supported;
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
             // https://github.com/1Password/arboard/blob/151e679ee5c208403b06ba02d28f92c5891f7867/src/platform/linux/wayland.rs#L50
             if let Err(error) = is_primary_selection_supported() {
-                println!("Failed to start wayland: {:?}, fall back to x11", error);
+                println!("Failed to start wayland: {:?}, fall back to x11", error); 
             } else {
                 return self.run_wayland();
             }
