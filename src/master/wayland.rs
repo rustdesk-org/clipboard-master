@@ -17,7 +17,7 @@ use wayland_protocols_wlr::data_control::v1::client::{
 
 #[derive(Debug)]
 pub(crate) struct ClipBoardListenMessage {
-    pub mime_types: Vec<String>,
+    pub _mime_types: Vec<String>,
 }
 
 pub(crate) struct WlClipboardListener {
@@ -109,9 +109,10 @@ impl WlClipboardListener {
             queue
                 .flush()
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Flush failed: {e}")))?;
-            let read_guard = queue.prepare_read().map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Prepare read failed: {e}"))
-            })?;
+            let read_guard = queue.prepare_read().ok_or(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Prepare read failed"),
+            ))?;
             match read_guard.read() {
                 Ok(c) => {
                     if c > 0 {
@@ -139,7 +140,7 @@ impl WlClipboardListener {
             }
         }
         Ok(ClipBoardListenMessage {
-            mime_types: self.mime_types.clone(),
+            _mime_types: self.mime_types.clone(),
         })
     }
 }

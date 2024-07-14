@@ -19,14 +19,14 @@ windows-win = "3"
 x11-clipboard = "0.9"
 x11rb = { version = "0.13", features = ["xfixes"] }
 wl-clipboard-rs = { version = "0.9" }
-wayland-protocols = { version = "0.30.0", default-features = false, features = [
+wayland-protocols = { version = "0.32.2", default-features = false, features = [
 	"unstable",
 	"client",
 ] }
-wayland-protocols-wlr = { version = "0.1.0", default-features = false, features = [
+wayland-protocols-wlr = { version = "0.3.2", default-features = false, features = [
 	"client",
 ] }
-wayland-client = { version = "0.30.1", features = ["calloop"] }
+wayland-client = { version = "0.31.4" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
