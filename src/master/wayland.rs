@@ -126,10 +126,15 @@ impl WlClipboardListener {
                             self.copied = false;
                             break;
                         }
+                    } else {
+                        // https://docs.rs/wayland-backend/latest/wayland_backend/rs/client/struct.ReadEventsGuard.html#method.read
+                        // It's wired that `read()` return `Ok(0)` if `winit` is in `Cargo.tomml`.
+                        // https://github.com/rust-windowing/winit/issues/4380
+                        std::thread::sleep(std::time::Duration::from_millis(30));
                     }
                 }
                 Err(WaylandError::Io(ref e)) if e.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(std::time::Duration::from_millis(30));
                 }
                 Err(e) => {
                     return Err(io::Error::new(
