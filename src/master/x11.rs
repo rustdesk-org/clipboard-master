@@ -281,15 +281,54 @@ impl<H: ClipboardHandler> Master<H> {
 
    ///Starts Master by waiting for any change
     pub fn run(&mut self) -> io::Result<()> {
-        use wl_clipboard_rs::utils::is_primary_selection_supported;
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            // https://github.com/1Password/arboard/blob/151e679ee5c208403b06ba02d28f92c5891f7867/src/platform/linux/wayland.rs#L50
-            if let Err(error) = is_primary_selection_supported() {
-                println!("Failed to start wayland: {:?}, fall back to x11", error); 
-            } else {
+            // Try to detect if any data control protocol is available.
+            // wl_clipboard_rs::utils::is_primary_selection_supported() only checks
+            // zwlr_data_control_v1 which was removed in KDE Plasma 6.5+.
+            // Our WlClipboardListener::init() handles both ext and zwlr protocols,
+            // so we use a lightweight check: try to connect and probe the registry.
+            if Self::is_wayland_data_control_available() {
                 return self.run_wayland();
             }
+            println!("No wayland data control protocol available, falling back to x11");
         }
         self.run_x11()
+    }
+
+    fn is_wayland_data_control_available() -> bool {
+        use wayland_client::{Connection, Dispatch, Proxy, protocol::wl_registry};
+
+        struct Probe {
+            found: bool,
+        }
+
+        impl Dispatch<wl_registry::WlRegistry, ()> for Probe {
+            fn event(
+                state: &mut Self,
+                _: &wl_registry::WlRegistry,
+                event: <wl_registry::WlRegistry as Proxy>::Event,
+                _: &(),
+                _: &Connection,
+                _: &wayland_client::QueueHandle<Self>,
+            ) {
+                if let wl_registry::Event::Global { interface, .. } = event {
+                    if interface == "ext_data_control_manager_v1"
+                        || interface == "zwlr_data_control_manager_v1"
+                    {
+                        state.found = true;
+                    }
+                }
+            }
+        }
+
+        let Ok(conn) = Connection::connect_to_env() else {
+            return false;
+        };
+        let mut eq = conn.new_event_queue::<Probe>();
+        let qh = eq.handle();
+        conn.display().get_registry(&qh, ());
+        let mut probe = Probe { found: false };
+        let _ = eq.blocking_dispatch(&mut probe);
+        probe.found
     }
 }

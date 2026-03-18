@@ -1,4 +1,5 @@
 // Derived from https://github.com/Decodetalkers/wayland-clipboard-listener/blob/master/src/dispatch.rs
+// Extended to support both ext_data_control_v1 (preferred) and zwlr_data_control_v1 (fallback).
 
 use std::{
     io,
@@ -10,6 +11,10 @@ use wayland_client::{
     protocol::{wl_registry, wl_seat},
     Connection, Dispatch, EventQueue, Proxy,
 };
+use wayland_protocols::ext::data_control::v1::client::{
+    ext_data_control_device_v1, ext_data_control_manager_v1, ext_data_control_offer_v1,
+    ext_data_control_source_v1,
+};
 use wayland_protocols_wlr::data_control::v1::client::{
     zwlr_data_control_device_v1, zwlr_data_control_manager_v1, zwlr_data_control_offer_v1,
     zwlr_data_control_source_v1,
@@ -20,11 +25,21 @@ pub(crate) struct ClipBoardListenMessage {
     pub _mime_types: Vec<String>,
 }
 
+enum DataControlManager {
+    Ext(ext_data_control_manager_v1::ExtDataControlManagerV1),
+    Zwlr(zwlr_data_control_manager_v1::ZwlrDataControlManagerV1),
+}
+
+enum DataControlDevice {
+    Ext(ext_data_control_device_v1::ExtDataControlDeviceV1),
+    Zwlr(zwlr_data_control_device_v1::ZwlrDataControlDeviceV1),
+}
+
 pub(crate) struct WlClipboardListener {
     seat: Option<wl_seat::WlSeat>,
     seat_name: Option<String>,
-    data_manager: Option<zwlr_data_control_manager_v1::ZwlrDataControlManagerV1>,
-    data_device: Option<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1>,
+    data_manager: Option<DataControlManager>,
+    data_device: Option<DataControlDevice>,
     mime_types: Vec<String>,
     queue: Option<Arc<Mutex<EventQueue<Self>>>>,
     exit_flag: Arc<AtomicBool>,
@@ -60,7 +75,7 @@ impl WlClipboardListener {
         if !state.device_ready() {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                "Cannot get seat and data manager",
+                "Cannot get seat and data manager (neither ext_data_control_v1 nor zwlr_data_control_v1 available)",
             ));
         }
         while state.seat_name.is_none() {
@@ -80,9 +95,13 @@ impl WlClipboardListener {
 
     fn set_data_device(&mut self, qh: &wayland_client::QueueHandle<Self>) {
         match (self.seat.as_ref(), self.data_manager.as_ref()) {
-            (Some(seat), Some(manager)) => {
+            (Some(seat), Some(DataControlManager::Ext(manager))) => {
                 let device = manager.get_data_device(seat, qh, ());
-                self.data_device = Some(device);
+                self.data_device = Some(DataControlDevice::Ext(device));
+            }
+            (Some(seat), Some(DataControlManager::Zwlr(manager))) => {
+                let device = manager.get_data_device(seat, qh, ());
+                self.data_device = Some(DataControlDevice::Zwlr(device));
             }
             _ => {}
         }
@@ -158,6 +177,8 @@ impl Iterator for WlClipboardListener {
     }
 }
 
+// --- Registry dispatch: prefer ext_data_control_v1, fall back to zwlr_data_control_v1 ---
+
 impl Dispatch<wl_registry::WlRegistry, ()> for WlClipboardListener {
     fn event(
         state: &mut Self,
@@ -176,16 +197,26 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WlClipboardListener {
             if interface == wl_seat::WlSeat::interface().name {
                 state.seat = Some(registry.bind::<wl_seat::WlSeat, _, _>(name, version, qh, ()));
             } else if interface
+                == ext_data_control_manager_v1::ExtDataControlManagerV1::interface().name
+            {
+                // Prefer ext protocol (standard, supported by Plasma 6.5+, wlroots 0.18+)
+                state.data_manager = Some(DataControlManager::Ext(
+                    registry.bind::<ext_data_control_manager_v1::ExtDataControlManagerV1, _, _>(
+                        name, version, qh, (),
+                    ),
+                ));
+            } else if interface
                 == zwlr_data_control_manager_v1::ZwlrDataControlManagerV1::interface().name
             {
-                state.data_manager = Some(
-                    registry.bind::<zwlr_data_control_manager_v1::ZwlrDataControlManagerV1, _, _>(
-                        name,
-                        version,
-                        qh,
-                        (),
-                    ),
-                );
+                // Only use zwlr if ext is not already bound
+                if !matches!(state.data_manager, Some(DataControlManager::Ext(_))) {
+                    state.data_manager = Some(DataControlManager::Zwlr(
+                        registry
+                            .bind::<zwlr_data_control_manager_v1::ZwlrDataControlManagerV1, _, _>(
+                                name, version, qh, (),
+                            ),
+                    ));
+                }
             }
         }
     }
@@ -205,6 +236,94 @@ impl Dispatch<wl_seat::WlSeat, ()> for WlClipboardListener {
         }
     }
 }
+
+// --- ext_data_control_v1 dispatch implementations ---
+
+impl Dispatch<ext_data_control_manager_v1::ExtDataControlManagerV1, ()> for WlClipboardListener {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ext_data_control_manager_v1::ExtDataControlManagerV1,
+        _event: <ext_data_control_manager_v1::ExtDataControlManagerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &wayland_client::Connection,
+        _qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ext_data_control_device_v1::ExtDataControlDeviceV1, ()> for WlClipboardListener {
+    fn event(
+        state: &mut Self,
+        _proxy: &ext_data_control_device_v1::ExtDataControlDeviceV1,
+        event: <ext_data_control_device_v1::ExtDataControlDeviceV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        qh: &wayland_client::QueueHandle<Self>,
+    ) {
+        match event {
+            ext_data_control_device_v1::Event::DataOffer { id: _id } => {}
+            ext_data_control_device_v1::Event::Finished => {
+                if let Some(DataControlManager::Ext(dm)) = state.data_manager.as_ref() {
+                    let source = dm.create_data_source(qh, ());
+                    if let Some(DataControlDevice::Ext(dd)) = state.data_device.as_ref() {
+                        dd.set_selection(Some(&source));
+                    }
+                }
+            }
+            ext_data_control_device_v1::Event::PrimarySelection { id } => {
+                if let Some(offer) = id {
+                    offer.destroy();
+                }
+            }
+            ext_data_control_device_v1::Event::Selection { id } => {
+                let Some(_offer) = id else {
+                    return;
+                };
+                state.copied = true;
+            }
+            _ => {}
+        }
+    }
+    event_created_child!(WlClipboardListener, ext_data_control_device_v1::ExtDataControlDeviceV1, [
+        ext_data_control_device_v1::EVT_DATA_OFFER_OPCODE => (ext_data_control_offer_v1::ExtDataControlOfferV1, ())
+    ]);
+}
+
+impl Dispatch<ext_data_control_source_v1::ExtDataControlSourceV1, ()> for WlClipboardListener {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ext_data_control_source_v1::ExtDataControlSourceV1,
+        event: <ext_data_control_source_v1::ExtDataControlSourceV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        match event {
+            ext_data_control_source_v1::Event::Send {
+                fd: _fd,
+                mime_type: _mime_type,
+            } => {}
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ext_data_control_offer_v1::ExtDataControlOfferV1, ()> for WlClipboardListener {
+    fn event(
+        state: &mut Self,
+        _proxy: &ext_data_control_offer_v1::ExtDataControlOfferV1,
+        event: <ext_data_control_offer_v1::ExtDataControlOfferV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        if let ext_data_control_offer_v1::Event::Offer { mime_type } = event {
+            state.mime_types.push(mime_type);
+        }
+    }
+}
+
+// --- zwlr_data_control_v1 dispatch implementations (fallback for older compositors) ---
 
 impl Dispatch<zwlr_data_control_manager_v1::ZwlrDataControlManagerV1, ()> for WlClipboardListener {
     fn event(
@@ -230,15 +349,11 @@ impl Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, ()> for WlCl
         match event {
             zwlr_data_control_device_v1::Event::DataOffer { id: _id } => {}
             zwlr_data_control_device_v1::Event::Finished => {
-                if let Some(source) = state
-                    .data_manager
-                    .as_ref()
-                    .map(|dm| dm.create_data_source(qh, ()))
-                {
-                    state
-                        .data_device
-                        .as_ref()
-                        .map(|dd| dd.set_selection(Some(&source)));
+                if let Some(DataControlManager::Zwlr(dm)) = state.data_manager.as_ref() {
+                    let source = dm.create_data_source(qh, ());
+                    if let Some(DataControlDevice::Zwlr(dd)) = state.data_device.as_ref() {
+                        dd.set_selection(Some(&source));
+                    }
                 }
             }
             zwlr_data_control_device_v1::Event::PrimarySelection { id } => {
