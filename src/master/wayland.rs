@@ -20,6 +20,12 @@ use wayland_protocols_wlr::data_control::v1::client::{
     zwlr_data_control_source_v1,
 };
 
+const WL_SEAT_NAME_VERSION: u32 = 2;
+
+fn bind_version<I: Proxy>(advertised_version: u32) -> u32 {
+    advertised_version.min(I::interface().version)
+}
+
 #[derive(Debug)]
 pub(crate) struct ClipBoardListenMessage {
     pub _mime_types: Vec<String>,
@@ -195,14 +201,26 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WlClipboardListener {
         } = event
         {
             if interface == wl_seat::WlSeat::interface().name {
-                state.seat = Some(registry.bind::<wl_seat::WlSeat, _, _>(name, version, qh, ()));
+                if version >= WL_SEAT_NAME_VERSION && state.seat.is_none() {
+                    state.seat = Some(registry.bind::<wl_seat::WlSeat, _, _>(
+                        name,
+                        bind_version::<wl_seat::WlSeat>(WL_SEAT_NAME_VERSION),
+                        qh,
+                        (),
+                    ));
+                }
             } else if interface
                 == ext_data_control_manager_v1::ExtDataControlManagerV1::interface().name
             {
                 // Prefer ext protocol (standard, supported by Plasma 6.5+, wlroots 0.18+)
                 state.data_manager = Some(DataControlManager::Ext(
                     registry.bind::<ext_data_control_manager_v1::ExtDataControlManagerV1, _, _>(
-                        name, version, qh, (),
+                        name,
+                        bind_version::<ext_data_control_manager_v1::ExtDataControlManagerV1>(
+                            version,
+                        ),
+                        qh,
+                        (),
                     ),
                 ));
             } else if interface
@@ -213,7 +231,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WlClipboardListener {
                     state.data_manager = Some(DataControlManager::Zwlr(
                         registry
                             .bind::<zwlr_data_control_manager_v1::ZwlrDataControlManagerV1, _, _>(
-                                name, version, qh, (),
+                                name,
+                                bind_version::<
+                                    zwlr_data_control_manager_v1::ZwlrDataControlManagerV1,
+                                >(version),
+                                qh,
+                                (),
                             ),
                     ));
                 }
@@ -258,16 +281,13 @@ impl Dispatch<ext_data_control_device_v1::ExtDataControlDeviceV1, ()> for WlClip
         event: <ext_data_control_device_v1::ExtDataControlDeviceV1 as Proxy>::Event,
         _data: &(),
         _conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        _qhandle: &wayland_client::QueueHandle<Self>,
     ) {
         match event {
             ext_data_control_device_v1::Event::DataOffer { id: _id } => {}
             ext_data_control_device_v1::Event::Finished => {
-                if let Some(DataControlManager::Ext(dm)) = state.data_manager.as_ref() {
-                    let source = dm.create_data_source(qh, ());
-                    if let Some(DataControlDevice::Ext(dd)) = state.data_device.as_ref() {
-                        dd.set_selection(Some(&source));
-                    }
+                if let Some(DataControlDevice::Ext(device)) = state.data_device.take() {
+                    device.destroy();
                 }
             }
             ext_data_control_device_v1::Event::PrimarySelection { id } => {
@@ -344,16 +364,13 @@ impl Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, ()> for WlCl
         event: <zwlr_data_control_device_v1::ZwlrDataControlDeviceV1 as Proxy>::Event,
         _data: &(),
         _conn: &Connection,
-        qh: &wayland_client::QueueHandle<Self>,
+        _qhandle: &wayland_client::QueueHandle<Self>,
     ) {
         match event {
             zwlr_data_control_device_v1::Event::DataOffer { id: _id } => {}
             zwlr_data_control_device_v1::Event::Finished => {
-                if let Some(DataControlManager::Zwlr(dm)) = state.data_manager.as_ref() {
-                    let source = dm.create_data_source(qh, ());
-                    if let Some(DataControlDevice::Zwlr(dd)) = state.data_device.as_ref() {
-                        dd.set_selection(Some(&source));
-                    }
+                if let Some(DataControlDevice::Zwlr(device)) = state.data_device.take() {
+                    device.destroy();
                 }
             }
             zwlr_data_control_device_v1::Event::PrimarySelection { id } => {
