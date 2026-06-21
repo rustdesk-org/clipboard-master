@@ -44,6 +44,7 @@ enum DataControlDevice {
 pub(crate) struct WlClipboardListener {
     seat: Option<wl_seat::WlSeat>,
     seat_name: Option<String>,
+    seat_name_supported: bool,
     data_manager: Option<DataControlManager>,
     data_device: Option<DataControlDevice>,
     terminated_reason: Option<&'static str>,
@@ -69,6 +70,7 @@ impl WlClipboardListener {
         let mut state = WlClipboardListener {
             seat: None,
             seat_name: None,
+            seat_name_supported: false,
             data_manager: None,
             data_device: None,
             terminated_reason: None,
@@ -86,10 +88,12 @@ impl WlClipboardListener {
                 "Cannot get seat and data manager (neither ext_data_control_v1 nor zwlr_data_control_v1 available)",
             ));
         }
-        while state.seat_name.is_none() {
-            event_queue.roundtrip(&mut state).map_err(|_| {
-                io::Error::new(io::ErrorKind::Other, "Cannot roundtrip during init")
-            })?;
+        if state.seat_name_supported {
+            while state.seat_name.is_none() {
+                event_queue.roundtrip(&mut state).map_err(|_| {
+                    io::Error::new(io::ErrorKind::Other, "Cannot roundtrip during init")
+                })?;
+            }
         }
 
         state.set_data_device(&qhandle);
@@ -179,7 +183,7 @@ impl WlClipboardListener {
             }
         }
         Ok(ClipBoardListenMessage {
-            _mime_types: self.mime_types.clone(),
+            _mime_types: std::mem::take(&mut self.mime_types),
         })
     }
 }
@@ -210,10 +214,11 @@ impl Dispatch<wl_registry::WlRegistry, ()> for WlClipboardListener {
         } = event
         {
             if interface == wl_seat::WlSeat::interface().name {
-                if version >= WL_SEAT_NAME_VERSION && state.seat.is_none() {
+                if state.seat.is_none() {
+                    state.seat_name_supported = version >= WL_SEAT_NAME_VERSION;
                     state.seat = Some(registry.bind::<wl_seat::WlSeat, _, _>(
                         name,
-                        bind_version::<wl_seat::WlSeat>(WL_SEAT_NAME_VERSION),
+                        bind_version::<wl_seat::WlSeat>(version),
                         qh,
                         (),
                     ));
@@ -307,9 +312,10 @@ impl Dispatch<ext_data_control_device_v1::ExtDataControlDeviceV1, ()> for WlClip
                 }
             }
             ext_data_control_device_v1::Event::Selection { id } => {
-                let Some(_offer) = id else {
+                let Some(offer) = id else {
                     return;
                 };
+                offer.destroy();
                 state.copied = true;
             }
             _ => {}
@@ -392,9 +398,10 @@ impl Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, ()> for WlCl
                 }
             }
             zwlr_data_control_device_v1::Event::Selection { id } => {
-                let Some(_offer) = id else {
+                let Some(offer) = id else {
                     return;
                 };
+                offer.destroy();
                 state.copied = true;
             }
             _ => {

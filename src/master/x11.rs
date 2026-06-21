@@ -272,6 +272,8 @@ impl<H: ClipboardHandler> Master<H> {
                             );
                             eprintln!("Wayland clipboard listener stopped with error: {}", error);
                             match self.handler.on_clipboard_error(error) {
+                                // The Wayland listener cannot recover once the stream fails, so
+                                // even `Next` means stopping this run loop.
                                 CallbackResult::Next => break,
                                 CallbackResult::Stop => break,
                                 CallbackResult::StopWithError(error) => {
@@ -316,6 +318,8 @@ impl<H: ClipboardHandler> Master<H> {
                         eprintln!("Wayland clipboard listener initialization failed after probe succeeded: {}. Falling back to X11.", error);
                     }
                     Err(WaylandRunError::Runtime(error)) => {
+                        // Runtime failures are reported to the caller instead of silently
+                        // switching backends after the listener has already started.
                         return Err(error);
                     }
                 }
