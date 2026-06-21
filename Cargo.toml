@@ -19,8 +19,9 @@ windows-win = "3"
 x11-clipboard = "0.9"
 x11rb = { version = "0.13", features = ["xfixes"] }
 wl-clipboard-rs = { version = "0.9" }
-wayland-protocols = { version = "0.32.2", default-features = false, features = [
+wayland-protocols = { version = "0.32.6", default-features = false, features = [
 	"unstable",
+	"staging",
 	"client",
 ] }
 wayland-protocols-wlr = { version = "0.3.2", default-features = false, features = [

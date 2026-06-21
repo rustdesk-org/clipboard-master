@@ -37,6 +37,11 @@ pub struct Master<H> {
     recv: Arc<Mutex<Receiver<()>>>
 }
 
+enum WaylandRunError {
+    Init(io::Error),
+    Runtime(io::Error),
+}
+
 impl<H: ClipboardHandler> Master<H> {
     #[inline(always)]
     ///Creates new instance.
@@ -227,7 +232,7 @@ impl<H: ClipboardHandler> Master<H> {
         CLIP.get_or_init(x11_clipboard::Clipboard::new)
     }
 
-    fn run_wayland(&mut self) -> io::Result<()> {
+    fn run_wayland(&mut self) -> Result<(), WaylandRunError> {
         let exit_flag = Arc::new(AtomicBool::new(false));
         let exit_flag_clone = exit_flag.clone();
 
@@ -254,13 +259,33 @@ impl<H: ClipboardHandler> Master<H> {
         use super::wayland::WlClipboardListener;
         match WlClipboardListener::init(exit_flag.clone()) {
             Ok(listener) => {
-                for _context in listener.into_iter() {
+                for context in listener.into_iter() {
                     if exit_flag.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
+                    match context {
+                        Ok(_) => {}
+                        Err(error) => {
+                            let error = io::Error::new(
+                                io::ErrorKind::Other,
+                                format!("Wayland clipboard listener failed: {error}"),
+                            );
+                            eprintln!("Wayland clipboard listener stopped with error: {}", error);
+                            match self.handler.on_clipboard_error(error) {
+                                // The Wayland listener cannot recover once the stream fails, so
+                                // even `Next` means stopping this run loop.
+                                CallbackResult::Next => break,
+                                CallbackResult::Stop => break,
+                                CallbackResult::StopWithError(error) => {
+                                    result = Err(WaylandRunError::Runtime(error));
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     match self.handler.on_clipboard_change() {
                         CallbackResult::StopWithError(error) => {
-                            result = Err(error);
+                            result = Err(WaylandRunError::Runtime(error));
                             break;
                         }
                         CallbackResult::Stop => {
@@ -271,7 +296,7 @@ impl<H: ClipboardHandler> Master<H> {
                 }
             }
             Err(error) => {
-                result = Err(io::Error::new(io::ErrorKind::Other, error));
+                result = Err(WaylandRunError::Init(io::Error::new(io::ErrorKind::Other, error)));
             }
         }
         listen_tx.send(()).ok();
@@ -285,9 +310,19 @@ impl<H: ClipboardHandler> Master<H> {
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
             // https://github.com/1Password/arboard/blob/151e679ee5c208403b06ba02d28f92c5891f7867/src/platform/linux/wayland.rs#L50
             if let Err(error) = is_primary_selection_supported() {
-                println!("Failed to start wayland: {:?}, fall back to x11", error); 
+                println!("Failed to start wayland: {:?}, fall back to x11", error);
             } else {
-                return self.run_wayland();
+                match self.run_wayland() {
+                    Ok(()) => return Ok(()),
+                    Err(WaylandRunError::Init(error)) => {
+                        eprintln!("Wayland clipboard listener initialization failed after probe succeeded: {}. Falling back to X11.", error);
+                    }
+                    Err(WaylandRunError::Runtime(error)) => {
+                        // Runtime failures are reported to the caller instead of silently
+                        // switching backends after the listener has already started.
+                        return Err(error);
+                    }
+                }
             }
         }
         self.run_x11()
