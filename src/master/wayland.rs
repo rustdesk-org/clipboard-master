@@ -46,6 +46,7 @@ pub(crate) struct WlClipboardListener {
     seat_name: Option<String>,
     data_manager: Option<DataControlManager>,
     data_device: Option<DataControlDevice>,
+    terminated_reason: Option<&'static str>,
     mime_types: Vec<String>,
     queue: Option<Arc<Mutex<EventQueue<Self>>>>,
     exit_flag: Arc<AtomicBool>,
@@ -70,6 +71,7 @@ impl WlClipboardListener {
             seat_name: None,
             data_manager: None,
             data_device: None,
+            terminated_reason: None,
             mime_types: Vec::new(),
             queue: None,
             exit_flag,
@@ -124,6 +126,10 @@ impl WlClipboardListener {
             .lock()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Cannot lock queue: {e}")))?;
         loop {
+            if let Some(reason) = self.terminated_reason.take() {
+                return Err(io::Error::new(io::ErrorKind::Other, reason));
+            }
+
             if self.exit_flag.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -147,6 +153,9 @@ impl WlClipboardListener {
                                 format!("Dispatch pending failed: {e}"),
                             )
                         })?;
+                        if let Some(reason) = self.terminated_reason.take() {
+                            return Err(io::Error::new(io::ErrorKind::Other, reason));
+                        }
                         if self.copied {
                             self.copied = false;
                             break;
@@ -287,8 +296,10 @@ impl Dispatch<ext_data_control_device_v1::ExtDataControlDeviceV1, ()> for WlClip
             ext_data_control_device_v1::Event::DataOffer { id: _id } => {}
             ext_data_control_device_v1::Event::Finished => {
                 if let Some(DataControlDevice::Ext(device)) = state.data_device.take() {
+                    eprintln!("Wayland ext_data_control_v1 device finished; stopping clipboard listener");
                     device.destroy();
                 }
+                state.terminated_reason = Some("Wayland ext_data_control_v1 device finished");
             }
             ext_data_control_device_v1::Event::PrimarySelection { id } => {
                 if let Some(offer) = id {
@@ -370,8 +381,10 @@ impl Dispatch<zwlr_data_control_device_v1::ZwlrDataControlDeviceV1, ()> for WlCl
             zwlr_data_control_device_v1::Event::DataOffer { id: _id } => {}
             zwlr_data_control_device_v1::Event::Finished => {
                 if let Some(DataControlDevice::Zwlr(device)) = state.data_device.take() {
+                    eprintln!("Wayland zwlr_data_control_v1 device finished; stopping clipboard listener");
                     device.destroy();
                 }
+                state.terminated_reason = Some("Wayland zwlr_data_control_v1 device finished");
             }
             zwlr_data_control_device_v1::Event::PrimarySelection { id } => {
                 if let Some(offer) = id {
