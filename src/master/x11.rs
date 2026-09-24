@@ -82,6 +82,7 @@ impl<H: ClipboardHandler> Master<H> {
         }
 
         let mut result = Ok(());
+        let mut ready_notified = false;
         'main: loop {
             let selection = clipboard.getter.atoms.clipboard;
 
@@ -151,6 +152,11 @@ impl<H: ClipboardHandler> Master<H> {
                     }
                 }
             };
+
+            if !ready_notified {
+                ready_notified = true;
+                self.handler.on_clipboard_ready();
+            }
 
             'poll: loop {
                 match clipboard.getter.connection.poll_for_event_with_sequence() {
@@ -259,12 +265,13 @@ impl<H: ClipboardHandler> Master<H> {
         use super::wayland::WlClipboardListener;
         match WlClipboardListener::init(exit_flag.clone()) {
             Ok(listener) => {
+                self.handler.on_clipboard_ready();
                 for context in listener.into_iter() {
                     if exit_flag.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
-                    match context {
-                        Ok(_) => {}
+                    let is_initial = match context {
+                        Ok(context) => context.is_initial,
                         Err(error) => {
                             let error = io::Error::new(
                                 io::ErrorKind::Other,
@@ -282,8 +289,13 @@ impl<H: ClipboardHandler> Master<H> {
                                 }
                             }
                         }
-                    }
-                    match self.handler.on_clipboard_change() {
+                    };
+                    let callback_result = if is_initial {
+                        self.handler.on_clipboard_initial_selection()
+                    } else {
+                        self.handler.on_clipboard_change()
+                    };
+                    match callback_result {
                         CallbackResult::StopWithError(error) => {
                             result = Err(WaylandRunError::Runtime(error));
                             break;
@@ -295,6 +307,7 @@ impl<H: ClipboardHandler> Master<H> {
                     }
                 }
             }
+            Err(_) if exit_flag.load(std::sync::atomic::Ordering::Relaxed) => {}
             Err(error) => {
                 result = Err(WaylandRunError::Init(io::Error::new(io::ErrorKind::Other, error)));
             }

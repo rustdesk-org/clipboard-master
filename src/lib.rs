@@ -51,6 +51,21 @@ pub use master::{Master, Shutdown};
 pub trait ClipboardHandler {
     ///Callback to call on clipboard change.
     fn on_clipboard_change(&mut self) -> CallbackResult;
+
+    ///Called once after the X11 or Wayland backend subscribes to clipboard changes,
+    ///even when the clipboard is empty, and before the first change callback.
+    ///Other backends do not emit this notification.
+    fn on_clipboard_ready(&mut self) {}
+
+    ///Called when Wayland announces an existing selection at listener startup.
+    ///Defaults to a normal change notification for backwards compatibility.
+    ///This callback is not guaranteed on startup and is not a readiness signal.
+    ///An empty initial selection produces no callback. An initial selection batched
+    ///with a later change is reported through `on_clipboard_change()` instead.
+    fn on_clipboard_initial_selection(&mut self) -> CallbackResult {
+        self.on_clipboard_change()
+    }
+
     ///Callback to call on when error happens in master.
     fn on_clipboard_error(&mut self, error: io::Error) -> CallbackResult {
         CallbackResult::StopWithError(error)
@@ -79,5 +94,29 @@ impl Shutdown {
     ///Signals shutdown
     pub fn signal(self) {
         drop(self);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn initial_selection_defaults_to_clipboard_change() {
+        struct Handler {
+            called: bool,
+        }
+        impl ClipboardHandler for Handler {
+            fn on_clipboard_change(&mut self) -> CallbackResult {
+                self.called = true;
+                CallbackResult::Stop
+            }
+        }
+        let mut handler = Handler { called: false };
+        assert!(matches!(
+            handler.on_clipboard_initial_selection(),
+            CallbackResult::Stop
+        ));
+        assert!(handler.called);
     }
 }

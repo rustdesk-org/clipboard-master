@@ -12,6 +12,11 @@ impl ClipboardHandler for Handler {
         CallbackResult::Next
     }
 
+    fn on_clipboard_initial_selection(&mut self) -> CallbackResult {
+        println!("Initial clipboard selection announced!");
+        CallbackResult::Next
+    }
+
     fn on_clipboard_error(&mut self, error: io::Error) -> CallbackResult {
         eprintln!("Error: {}", error);
         CallbackResult::Next
